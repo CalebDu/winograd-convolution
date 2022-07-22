@@ -36,13 +36,19 @@ __global__ void rand_init_data(float *arr, int len, long long seed = 1) {
     curand_init(seed, tid, 0LL, &state);
     arr[tid] = curand_uniform(&state);
 }
-
-__global__ void dataCpy(float *dst, float *src, int len) {
-    auto tid = threadIdx.x + blockDim.x * blockIdx.x;
-    if (tid >= len) {
-        return;
-    }
-    dst[tid] = src[tid];
+// nchw -> chwn
+__global__ void dataCpy(float *dst, float *src, int batch, int channel,
+                        int size) {
+    // auto tid = threadIdx.x + blockDim.x * blockIdx.x;
+    // if (tid >= len) {
+    //     return;
+    // }
+    // dst[tid] = src[tid];
+    int src_idx = blockIdx.y + blockIdx.z * size + threadIdx.x * size * size +
+                  blockIdx.x * size * size * channel;
+    int dst_idx = blockIdx.x + blockIdx.y + batch + blockIdx.z * batch * size +
+                  threadIdx.x * batch * size * size;
+    dst[dst_idx] = src[src_idx];
 }
 
 void result_checker(float *ours, float *cudnn, int batch, int size, int channel,
@@ -81,12 +87,14 @@ cudaError_t init_all_data(float *input, float *input_cudnn, float *filter,
     auto thread = 256;
     dim3 grid((n - 1) / thread + 1);
     rand_init_data<<<grid, thread>>>(input, n);
-    dataCpy<<<grid, thread>>>(input_cudnn, input, n);
+    dataCpy<<<dim3(batch, size, size), channel>>>(input_cudnn, input, batch,
+                                                  channel, size);
 
     n = k * channel * ksize * ksize;
     grid = dim3((n - 1) / thread + 1);
     rand_init_data<<<grid, thread>>>(filter, n);
-    dataCpy<<<grid, thread>>>(filter_cudnn, filter, n);
+    dataCpy<<<dim3(k, ksize, ksize), channel>>>(filter_cudnn, filter, k,
+                                                channel, ksize);
     return cudaGetLastError();
 }
 
