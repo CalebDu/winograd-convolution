@@ -86,14 +86,14 @@ cudaError_t init_all_data(float *input, float *input_cudnn, float *filter,
     auto n = batch * channel * size * size;
     auto thread = 256;
     dim3 grid((n - 1) / thread + 1);
-    rand_init_data<<<grid, thread>>>(input, n);
-    dataCpy<<<dim3(batch, size, size), channel>>>(input_cudnn, input, batch,
+    rand_init_data<<<grid, thread>>>(input_cudnn, n);
+    dataCpy<<<dim3(batch, size, size), channel>>>(input, input_cudnn, batch,
                                                   channel, size);
 
     n = k * channel * ksize * ksize;
     grid = dim3((n - 1) / thread + 1);
-    rand_init_data<<<grid, thread>>>(filter, n);
-    dataCpy<<<dim3(k, ksize, ksize), channel>>>(filter_cudnn, filter, k,
+    rand_init_data<<<grid, thread>>>(filter_cudnn, n);
+    dataCpy<<<dim3(k, ksize, ksize), channel>>>(filter, filter_cudnn, k,
                                                 channel, ksize);
     return cudaGetLastError();
 }
