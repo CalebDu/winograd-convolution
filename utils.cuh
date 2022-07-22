@@ -26,6 +26,7 @@
             std::exit(1);                                                      \
         }                                                                      \
     }
+// TODO: function copy access matrix to gpu mem
 
 __global__ void rand_init_data(float *arr, int len, long long seed = 1) {
     int tid = threadIdx.x + blockDim.x * blockIdx.x;

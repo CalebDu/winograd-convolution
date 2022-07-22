@@ -1,7 +1,7 @@
 #include "FX.cu"
 #include "config.h"
+#include "outer_product.cuh"
 #include "utils.cuh"
-
 __global__ void winogradConvolution(float *intput, int batch, int channel,
                                     int size, int k, float *workspace,
                                     float *output, int tile_dim);
@@ -15,6 +15,19 @@ __device__ __forceinline__ void prefetch_input_tile(float *input, float *tile,
 __device__ __forceinline__ void
 load_and_transform_input_tile(float *input_tile, float *input_smem, int batch,
                               int channel, int size);
+
+__device__ __forceinline__ void
+load_filter_tile(float *filter_tile, float *tile_smem, int channel, int k);
+
+__device__ __forceinline__ void prefetch_input_frag(float4 *input_frag,
+                                                    float4 *load_input,
+                                                    int input_frag_offset,
+                                                    int offset1, int offset2);
+
+__device__ __forceinline__ void prefetch_filter_frag(float4 *filter_frag,
+                                                     float4 *load_filter,
+                                                     int filter_frag_offset,
+                                                     int offset1, int offset2);
 
 cudaError_t convolutionFwd(float *input, int batch, int channel, int size,
                            float *filter, int k, int ksize, float *output,
@@ -65,8 +78,8 @@ __global__ void winogradConvolution(float *input, int batch, int channel,
 
     float4 accumulator[2][16] = {0.0f}; // local result
 
-    int input_frag_offset = 2 * BC * BN;
-    int filter_frag_offset = 2 * BC * BK;
+    int input_frag_offset = 2 * BC * BN;  // float4: 4*2*BC*BN
+    int filter_frag_offset = 2 * BC * BK; // float4: 4*2*BC*BK
 
     prefetch_input_tile(input, input_tile, batch, size, tile_dim, mask);
     prefetch_filter_tile(filter, filter_tile, k);
@@ -74,8 +87,49 @@ __global__ void winogradConvolution(float *input, int batch, int channel,
         load_input = (float4 *)(input_smem + threadIdx.y * BC * BN);
         load_filter = (float4 *)(filter_smem + threadIdx.y * BC * BK);
 
-        load_and_transform_input_tile();
+        load_and_transform_input_tile(input_tile, input_smem, batch, channel,
+                                      size);
+        load_filter_tile(filter_tile, filter_smem, channel, k);
+        __syncthreads();
+        prefetch_input_frag(input_frag, load_input, input_frag_offset,
+                            access_input[0][threadIdx.x],
+                            access_input[1][threadIdx.x]);
+        prefetch_filter_frag(filter_frag, load_filter, filter_frag_offset,
+                             access_filter[0][threadIdx.x],
+                             access_filter[1][threadIdx.x]);
+#pragma unroll
+        for (int i = 0; i < BC; i++) {
+            if (i < BC - 1) {
+                load_input += (BN >> 2);
+                load_filter += (BK >> 2);
+                prefetch_input_frag(
+                    input_frag_buff, load_input, input_frag_offset,
+                    access_input[0][threadIdx.x], access_input[1][threadIdx.x]);
+                prefetch_filter_frag(filter_frag_buff, load_filter,
+                                     filter_frag_offset,
+                                     access_filter[0][threadIdx.x],
+                                     access_filter[1][threadIdx.x]);
+            }
+            //
+            outer_product(input_frag, filter_frag, accumulator);
+            swap = input_frag;
+            input_frag = input_frag_buff;
+            input_frag_buff = swap;
+
+            swap = filter_frag;
+            filter_frag = filter_frag_buff;
+            filter_frag_buff = swap;
+        }
+        input += batch * BC * size * size;
+        filter += k * BC * 4 * 4;
+        if (iter < (channel - BC)) {
+            prefetch_filter_tile(filter, filter_tile, k);
+            prefetch_input_tile(input, input_tile, batch, size, tile_dim, mask);
+        }
+        __syncthreads();
     }
+
+    // todo: store_output_tile;
 }
 
 __device__ __forceinline__ void prefetch_filter_tile(float *filter, float *tile,
@@ -128,13 +182,13 @@ __device__ __forceinline__ void prefetch_input_tile(float *input, float *tile,
 __device__ __forceinline__ void
 load_and_transform_input_tile(float *input_tile, float *input_smem, int batch,
                               int channel, int size) {
-    // *
-    // *     BT matrix                 input tile             B matrix
-    // *  |   1,   0,  -1,   0|   |  x1,  x2,  x3,  x4|    |   1,   0,   0,  0|
-    // *  |   0,   1,   1,   0|   |  x5,  x6,  x7,  x8|    |   0,   1,  -1,  1|
-    // *  |   0,  -1,   1,   0|   |  x9, x10, x11, x12|    |  -1,   1,   1,  0|
-    // *  |   0,   1,   0,  -1|   | x13, x14, x15, x16|    |   0,   0,   0, -1|
-    // *
+// *
+// *     BT matrix                 input tile             B matrix
+// *  |   1,   0,  -1,   0|   |  x1,  x2,  x3,  x4|    |   1,   0,   0,  0|
+// *  |   0,   1,   1,   0|   |  x5,  x6,  x7,  x8|    |   0,   1,  -1,  1|
+// *  |   0,  -1,   1,   0|   |  x9, x10, x11, x12|    |  -1,   1,   1,  0|
+// *  |   0,   1,   0,  -1|   | x13, x14, x15, x16|    |   0,   0,   0, -1|
+// *
 #define visit(tile, i, j) (tile[((i) << 2) + (j)])
 
     float buff[3];
@@ -151,7 +205,7 @@ load_and_transform_input_tile(float *input_tile, float *input_smem, int batch,
     }
     int offset = BN * BC;
     int tile_idx = threadIdx.y * BN + threadIdx.x;
-// * layout chwn -> 16 BC BN in shared memory
+// * layout CHWN -> 16 BC BN in shared memory
 #pragma unroll
     for (int i = 0; i < 4; i++) {
         input_smem[tile_idx + ((i << 2)) * offset] =
@@ -163,4 +217,43 @@ load_and_transform_input_tile(float *input_tile, float *input_smem, int batch,
         input_smem[tile_idx + ((i << 2) + 3) * offset] =
             visit(input_tile, i, 1) - visit(input_tile, i, 3);
     }
+#undef visit
+}
+
+__device__ __forceinline__ void
+load_filter_tile(float *filter_tile, float *tile_smem, int channel, int k) {
+
+    // * layout CHWN -> 16 BC BK in shared memory
+    int tile_idx = threadIdx.y * BK + threadIdx.x;
+    int offset = BK * BC;
+
+    for (int k = 0; k < 2; k++) {
+        for (int i = 0; i < 4; i++) {
+#pragma unroll
+            for (int j = 0; j < 4; j++) {
+                tile_smem[tile_idx + ((i << 2) + j) * offset] =
+                    filter_tile[(k << 4) + (i << 2) + j];
+            }
+        }
+        tile_idx += BN;
+    }
+}
+__device__ __forceinline__ void prefetch_input_frag(float4 *input_frag,
+                                                    float4 *load_input,
+                                                    int input_frag_offset,
+                                                    int offset1, int offset2) {
+    input_frag[0] = load_input[offset1];
+    input_frag[1] = load_input[offset2];
+    input_frag[2] = load_input[input_frag_offset + offset1];
+    input_frag[3] = load_input[input_frag_offset + offset2];
+}
+
+__device__ __forceinline__ void prefetch_filter_frag(float4 *filter_frag,
+                                                     float4 *load_filter,
+                                                     int filter_frag_offset,
+                                                     int offset1, int offset2) {
+    filter_frag[0] = load_filter[offset1];
+    filter_frag[1] = load_filter[offset2];
+    filter_frag[2] = load_filter[filter_frag_offset + offset1];
+    filter_frag[3] = load_filter[filter_frag_offset + offset2];
 }
