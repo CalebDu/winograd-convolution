@@ -28,8 +28,8 @@
 // #define M 2
 #define ALPHA 4
 
-__constant__ int access_w[2][32];
-__constant__ int access_x[2][32];
+__constant__ int access_filter[2][32];
+__constant__ int access_input[2][32];
 __constant__ int access_out[2][16];
 __constant__ int out_thread[4][4];
 
