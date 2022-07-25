@@ -1,7 +1,9 @@
 #include "FX.cu"
 #include "config.h"
 #include "outer_product.cuh"
+#include "store_and_transformation_output.cuh"
 #include "utils.cuh"
+
 __global__ void winogradConvolution(float *intput, int batch, int channel,
                                     int size, int k, float *workspace,
                                     float *output, int tile_dim);
@@ -130,6 +132,8 @@ __global__ void winogradConvolution(float *input, int batch, int channel,
     }
 
     // todo: store_output_tile;
+    store_output_tile(accumulator, smem, output, size, tile_dim, k,
+                      input_frag_mem, filter_frag_mem, out_thread, access_out);
 }
 
 __device__ __forceinline__ void prefetch_filter_tile(float *filter, float *tile,
@@ -139,7 +143,7 @@ __device__ __forceinline__ void prefetch_filter_tile(float *filter, float *tile,
 #pragma unroll
     for (int i = 0; i < 4; i++) {
         offset = (i * k << 2);
-#pragma unroll;
+#pragma unroll
         for (int j = 0; j < 4; j++) {
             tile[(i << 2) + j] = filter[tile_idx + offset + j * k];
             tile[(i << 2) + j + 16] = filter[tile_idx + offset + j * k + BN];

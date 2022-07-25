@@ -26,7 +26,14 @@
             std::exit(1);                                                      \
         }                                                                      \
     }
-// TODO: function copy access matrix to gpu mem
+
+// function copy access matrix to gpu mem
+void access_mat_cpy() {
+    CUDA_CHECK(cudaMemcpyToSymbol(access_filter, aux, sizeof(aux)));
+    CUDA_CHECK(cudaMemcpyToSymbol(access_input, aux2, sizeof(aux2)));
+    CUDA_CHECK(cudaMemcpyToSymbol(access_out, aux3, sizeof(aux3)));
+    CUDA_CHECK(cudaMemcpyToSymbol(out_thread, aux4, sizeof(aux4)));
+}
 
 __global__ void rand_init_data(float *arr, int len, long long seed = 1) {
     int tid = threadIdx.x + blockDim.x * blockIdx.x;
@@ -111,6 +118,7 @@ decltype(auto) init(const int batch, const int channel, const int size,
                     const int k, const int ksize) {
     constexpr size_t Width = sizeof(float);
 
+    // initialize device space for each component
     size_t input_Nbyte = batch * channel * size * size * Width;
     size_t filter_Nbyte = k * channel * ksize * ksize * Width;
     size_t workspace_Nbyte = k * channel * 4 * 4 * Width;
@@ -118,6 +126,7 @@ decltype(auto) init(const int batch, const int channel, const int size,
     float *input, *input_cudnn, *filter, *filter_cudnn, *workspace, *output,
         *output_cudnn;
 
+    // malloc device memory
     CUDA_CHECK(cudaMalloc(&input, input_Nbyte));
     CUDA_CHECK(cudaMalloc(&input_cudnn, input_Nbyte));
     CUDA_CHECK(cudaMalloc(&filter, filter_Nbyte));
@@ -127,7 +136,9 @@ decltype(auto) init(const int batch, const int channel, const int size,
     CUDA_CHECK(cudaMalloc(&output_cudnn, output_Nbyte));
     init_all_data(input, input_cudnn, filter, filter_cudnn, batch, channel,
                   size, k, ksize);
-
+    // copy access matrix to device 
+    access_mat_cpy();
+    
     return std::make_tuple(input, input_cudnn, filter, filter_cudnn, workspace,
                            output, output_cudnn);
 }

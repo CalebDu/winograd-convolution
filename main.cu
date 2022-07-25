@@ -7,7 +7,6 @@
 #include "config.h"
 #include "convolutionForward.cu"
 #include "cudnn_runner.cuh"
-#include "store_and_transformation_output.cu"
 #include "utils.cuh"
 
 int main(int argc, char *argv[]) {
@@ -23,19 +22,22 @@ int main(int argc, char *argv[]) {
 
     int tiles_dim = ceil(ceil((double)(SIZE + 2) / 2) - 1);
     int elems_dim = tiles_dim * 4;
-    int out_batch = batch, out_channel = Kfilter, out_size = size;
+    // int out_batch = batch, out_channel = Kfilter, out_size = size;
 
     float *input, *input_cudnn, *filter, *filter_cudnn, *workspace, *output,
         *output_cudnn;
     std::tie(input, input_cudnn, filter, filter_cudnn, workspace, output,
              output_cudnn) = init(batch, channel, size, Kfilter, KSIZE);
 
-    float round;
     Cudnn_runner runner(batch, channel, size, Kfilter, KSIZE);
-    runner.run(input_cudnn, filter_cudnn, output_cudnn);
 
     timer("cudnn", TFLOPs, [&runner, input_cudnn, filter_cudnn, output_cudnn] {
         runner.run(input_cudnn, filter_cudnn, output_cudnn);
+    });
+
+    timer("my", TFLOPs, [&] {
+        convolutionFwd(input, batch, channel, size, filter, Kfilter, KSIZE,
+                       output, workspace, ALPHA, tiles_dim);
     });
 
     return 0;
